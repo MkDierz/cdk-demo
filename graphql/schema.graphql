@@ -1,0 +1,24 @@
+# AppSync validates every request against this schema before the Lambda
+# resolver ever runs — resolvers only see fields that passed validation.
+
+type Todo {
+  id: ID!
+  title: String!
+  done: Boolean!
+  createdAt: String!
+}
+
+type Query {
+  listTodos: [Todo!]!
+  getTodo(id: ID!): Todo
+}
+
+type Mutation {
+  addTodo(title: String!): Todo!
+  toggleTodo(id: ID!): Todo!
+}
+
+schema {
+  query: Query
+  mutation: Mutation
+}
