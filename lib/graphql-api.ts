@@ -2,14 +2,16 @@ import * as cdk from 'aws-cdk-lib';
 import * as appsync from 'aws-cdk-lib/aws-appsync';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
-import type * as rds from 'aws-cdk-lib/aws-rds';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import type * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { Construct } from 'constructs';
 import * as path from 'node:path';
 import { dbEnvironment } from './database';
 
 export interface TodoApiProps {
-  readonly cluster: rds.DatabaseCluster;
-  readonly databaseName: string;
+  readonly table: dynamodb.Table;
+  readonly vpc?: ec2.Vpc;
+  readonly vpcSubnets?: ec2.SubnetSelection;
 }
 
 export class TodoApi extends Construct {
@@ -31,16 +33,15 @@ export class TodoApi extends Construct {
       entry: path.join(__dirname, '../lambda/handler.ts'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(30),
-      // Bundle the AWS SDK too — the Lambda runtime copy may differ from ours.
       bundling: { externalModules: [] },
-      environment: dbEnvironment(props.cluster, props.databaseName),
+      environment: dbEnvironment(props.table.tableName),
+      vpc: props.vpc,
+      vpcSubnets: props.vpcSubnets,
     });
-    props.cluster.grantDataApiAccess(resolverFn);
+    props.table.grantReadWriteData(resolverFn);
 
     const dataSource = this.api.addLambdaDataSource('TodoDataSource', resolverFn);
 
-    // One Lambda serves every field: AppSync sends typeName/fieldName in the
-    // event, and handler.ts dispatches to the right SQL with a switch.
     dataSource.createResolver('ListTodos', { typeName: 'Query', fieldName: 'listTodos' });
     dataSource.createResolver('GetTodo', { typeName: 'Query', fieldName: 'getTodo' });
     dataSource.createResolver('AddTodo', { typeName: 'Mutation', fieldName: 'addTodo' });

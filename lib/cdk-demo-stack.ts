@@ -1,6 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { DemoDatabase } from './database';
+import { DemoDatabase, dbEnvironment } from './database';
 import { TodoSeed } from './seed';
 import { TodoApi } from './graphql-api';
 
@@ -10,16 +10,12 @@ export class CdkDemoStack extends cdk.Stack {
 
     const database = new DemoDatabase(this, 'Database');
 
-    // Creates the table + sample rows before anything queries it.
     new TodoSeed(this, 'Seed', {
-      cluster: database.cluster,
-      databaseName: database.databaseName,
-      schemaVersion: '1',
+      table: database.table,
     });
 
     const api = new TodoApi(this, 'Api', {
-      cluster: database.cluster,
-      databaseName: database.databaseName,
+      table: database.table,
     });
 
     new cdk.CfnOutput(this, 'GraphQLUrl', { value: api.api.graphqlUrl });

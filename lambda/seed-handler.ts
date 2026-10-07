@@ -1,33 +1,59 @@
-import type { CloudFormationCustomResourceEvent } from 'aws-lambda';
-import { dbConfigFromEnv, runQuery } from './db';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 
-// Idempotent DDL — safe to run on every deploy.
-const CREATE_TODOS_TABLE = `
-CREATE TABLE IF NOT EXISTS todos (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  title TEXT NOT NULL,
-  done BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)`;
+const client = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(client);
 
-// ON CONFLICT DO NOTHING keeps re-runs from duplicating rows.
-const SEED_TODOS = `
-INSERT INTO todos (title) VALUES
-  ('Read the CDK docs'),
-  ('Ship the GraphQL demo')
-ON CONFLICT DO NOTHING`;
+const tableName = process.env.TABLE_NAME;
 
-export async function handleSeedEvent(event: CloudFormationCustomResourceEvent): Promise<unknown> {
-  if (event.RequestType === 'Delete') {
-    // Leave the data alone; the cluster itself is removed by CloudFormation.
-    return { PhysicalResourceId: event.PhysicalResourceId };
-  }
-
-  const config = dbConfigFromEnv();
-  await runQuery(config, CREATE_TODOS_TABLE);
-  await runQuery(config, SEED_TODOS);
-
-  return { PhysicalResourceId: 'TodoSchemaSeed' };
+export interface SeedEvent {
+  readonly RequestType: 'Create' | 'Update' | 'Delete';
+  readonly ResourceProperties: {
+    readonly schemaVersion: string;
+  };
 }
 
-export const handler = handleSeedEvent;
+export const handler = async (_event: SeedEvent): Promise<Record<string, unknown>> => {
+  if (!tableName) {
+    throw new Error('TABLE_NAME must be set');
+  }
+  const result = await docClient.send(new ScanCommand({ TableName: tableName, Limit: 1 }));
+  const hasItems = (result.Count ?? 0) > 0 || (result.Items && result.Items.length > 0);
+  if (!hasItems) {
+    const now = new Date().toISOString();
+    await docClient.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          id: 'seed-1',
+          title: 'Learn CDK',
+          done: true,
+          createdAt: now,
+        },
+      }),
+    );
+    await docClient.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          id: 'seed-2',
+          title: 'Build a GraphQL API',
+          done: false,
+          createdAt: new Date(Date.now() - 1000).toISOString(),
+        },
+      }),
+    );
+    await docClient.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          id: 'seed-3',
+          title: 'Connect to DynamoDB',
+          done: false,
+          createdAt: new Date(Date.now() - 2000).toISOString(),
+        },
+      }),
+    );
+  }
+  return { PhysicalResourceId: 'todo-seed' };
+};

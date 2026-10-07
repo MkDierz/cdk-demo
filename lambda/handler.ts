@@ -1,6 +1,6 @@
 import type { AppSyncResolverEvent } from 'aws-lambda';
-import type { Field, SqlParameter } from '@aws-sdk/client-rds-data';
-import { dbConfigFromEnv, runQuery, type QueryFn } from './db';
+import { dbConfigFromEnv, runOperation, type QueryFn, type DynamoDBOp } from './db';
+import { randomUUID } from 'crypto';
 
 export interface Todo {
   readonly id: string;
@@ -9,26 +9,23 @@ export interface Todo {
   readonly createdAt: string;
 }
 
-// Must match the column order expected by rowToTodo.
-const COLUMNS = 'id, title, done, created_at';
-
-function str(field: Field | undefined): string {
-  return field?.stringValue ?? '';
+function toString(val: unknown): string {
+  return val === null || val === undefined ? '' : String(val);
 }
 
-export function rowToTodo(row: Field[]): Todo {
+function toBoolean(val: unknown): boolean {
+  return Boolean(val);
+}
+
+export function rowToTodo(row: any): Todo {
   return {
-    id: str(row[0]),
-    title: str(row[1]),
-    done: row[2]?.booleanValue ?? false,
-    createdAt: str(row[3]),
+    id: toString(row.id),
+    title: toString(row.title),
+    done: toBoolean(row.done),
+    createdAt: toString(row.createdAt || row.created_at),
   };
 }
 
-/**
- * Pure dispatch logic: AppSync sends the field name, we pick the SQL.
- * The `query` dependency is injected so tests can run without AWS.
- */
 export async function handleEvent(
   event: AppSyncResolverEvent<Record<string, unknown>>,
   query: QueryFn,
@@ -37,27 +34,29 @@ export async function handleEvent(
 
   switch (event.info.fieldName) {
     case 'listTodos': {
-      const rows = await query(`SELECT ${COLUMNS} FROM todos ORDER BY created_at DESC`);
+      const rows = await query('listTodos');
       return rows.map(rowToTodo);
     }
     case 'getTodo': {
-      const rows = await query(`SELECT ${COLUMNS} FROM todos WHERE id = :id`, [
-        { name: 'id', value: { stringValue: String(args.id) } },
-      ]);
+      const rows = await query('getTodo', { id: String(args.id) });
       return rows.length > 0 ? rowToTodo(rows[0]) : null;
     }
     case 'addTodo': {
-      // RETURNING yields the inserted row without a second round trip.
-      const rows = await query(`INSERT INTO todos (title) VALUES (:title) RETURNING ${COLUMNS}`, [
-        { name: 'title', value: { stringValue: String(args.title) } },
-      ]);
+      const id = randomUUID();
+      const createdAt = new Date().toISOString();
+      const rows = await query('addTodo', {
+        id,
+        title: String(args.title),
+        createdAt,
+      });
       if (rows.length === 0) throw new Error('INSERT returned no row');
       return rowToTodo(rows[0]);
     }
     case 'toggleTodo': {
-      const rows = await query(`UPDATE todos SET done = NOT done WHERE id = :id RETURNING ${COLUMNS}`, [
-        { name: 'id', value: { stringValue: String(args.id) } },
-      ]);
+      const existing = await query('getTodo', { id: String(args.id) });
+      if (existing.length === 0) throw new Error(`Todo not found: ${String(args.id)}`);
+      const newDone = !toBoolean(existing[0].done);
+      const rows = await query('toggleTodo', { id: String(args.id), done: newDone });
       if (rows.length === 0) throw new Error(`Todo not found: ${String(args.id)}`);
       return rowToTodo(rows[0]);
     }
@@ -68,5 +67,5 @@ export async function handleEvent(
 
 export const handler = async (event: AppSyncResolverEvent<Record<string, unknown>>): Promise<unknown> => {
   const config = dbConfigFromEnv();
-  return handleEvent(event, (sql, params) => runQuery(config, sql, params));
+  return handleEvent(event, (op: DynamoDBOp, params?: any) => runOperation(config, op, params));
 };

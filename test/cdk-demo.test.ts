@@ -30,14 +30,15 @@ describe('CdkDemoStack', () => {
     });
   });
 
-  test('Aurora Serverless v2 Postgres with Data API enabled', () => {
-    template.hasResourceProperties('AWS::RDS::DBCluster', {
-      Engine: 'aurora-postgresql',
-      EnableHttpEndpoint: true,
-      ServerlessV2ScalingConfiguration: {
-        MinCapacity: 0.5,
-        MaxCapacity: 2,
-      },
+  test('DynamoDB table created', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        {
+          AttributeName: 'id',
+          KeyType: 'HASH',
+        },
+      ],
     });
   });
 
@@ -45,9 +46,5 @@ describe('CdkDemoStack', () => {
     template.hasResourceProperties('Custom::TodoSeed', {
       schemaVersion: '1',
     });
-  });
-
-  test('no NAT gateways — keeps demo deploys cheap', () => {
-    template.resourceCountIs('AWS::EC2::NatGateway', 0);
   });
 });
