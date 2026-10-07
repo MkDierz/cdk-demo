@@ -15,24 +15,25 @@ Verification order: **`build` → `test` → `synth`**. `cdk.json` runs `npx tsc
 
 ## Architecture
 
-AppSync GraphQL → single TypeScript Lambda resolver (`lambda/handler.ts`) → PostgreSQL accessed via a standard Postgres client (`pg` in `lambda/db.ts`). The Lambda wiring is thin (`handler` exports the AWS Lambda entry; `handleEvent` is pure/injectable).
+AppSync GraphQL → single TypeScript Lambda resolver (`lambda/handler.ts`) → externally hosted PostgreSQL accessed via standard Postgres client (`pg` in `lambda/db.ts`). The Lambda wiring is thin (`handler` exports the AWS Lambda entry; `handleEvent` is pure/injectable).
 
 Key paths: `lib/` constructs (`database.ts`, `graphql-api.ts`, `seed.ts`) composed by `cdk-demo-stack.ts`; `graphql/schema.graphql`; `lambda/` (`handler.ts`, `db.ts`, `seed-handler.ts`). Bundling via esbuild (NodejsFunction).
 
 ## External Postgres (current implementation)
 
-- DB access uses **normal Postgres client** (`pg`) with connection params (host/port/user/password/database/ssl) from env vars `DB_HOST`, `DB_PORT` (default 5432), `DB_USER`, `DB_PASSWORD`, `DB_NAME` (default `postgres`), `DB_SSL` (`true`/`false`).
-- `lambda/db.ts` exports `dbConfigFromEnv()`, `runQuery(config, sql, params)`, and `withTransaction(config, fn)` for atomic operations. SQL uses **parameterized queries** with `$1, $2, ...` (Postgres style). The `query` function returns `any[][]` for compatibility with the injected test shape.
+- No RDS cluster is provisioned. `lib/database.ts` creates/holds an external DB config (host/port/database) and a Secrets Manager secret that stores credentials (e.g. `username`, `password`, `host`, `port`, `dbname`). In demos, the secret is generated; in real deployments reference an existing secret.
+- DB access uses **normal Postgres client** (`pg`). `lambda/db.ts` reads connection details from env vars: `DB_HOST`, `DB_PORT` (default 5432), `DB_USER`, `DB_PASSWORD`, `DB_NAME` (default `postgres`), `DB_SSL` (`true`/`false`). If credentials are stored in Secrets Manager, Lambdas can read `DB_SECRET_ARN` and fetch them at runtime (extend `db.ts` as needed).
+- `lambda/db.ts` exports `dbConfigFromEnv()`, `runQuery(config, sql, params)`, and `withTransaction(config, fn)` for atomic operations. SQL uses **parameterized queries** with `$1, $2, ...`. The `query` function returns `any[][]` for compatibility with the injected test shape.
 - `handleEvent(event, query)` is pure and injectable; tests pass a fake `QueryFn` (no AWS, no module mocks). Keep this pattern.
-- Lambda environment is built by `dbEnvironment()` in `lib/database.ts` and consumed by Lambda functions. For externally hosted DB, this supplies the Postgres connection vars (not RDS Data API ARNs).
-- Seed runs as `Custom::TodoSeed` (custom resource). Bump `schemaVersion` in `cdk-demo-stack.ts` to re-run seed SQL.
+- Lambda environment is built by `dbEnvironmentFromSecret(host, port, databaseName, secret)` in `lib/database.ts` (sets `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_SECRET_ARN`). Lambdas get `secret.grantRead()` and do not require RDS Data API access.
+- Seed runs as `Custom::TodoSeed` (custom resource). Bump `schemaVersion` in `cdk-demo-stack.ts` to re-run seed SQL. Use `withTransaction()` when modifying multiple tables/rows that must commit atomically.
 
 ## Gotchas
 
-- **Secret exposure warning from CDK**: `dbEnvironment()` currently passes `cluster.secret.secretValueFromJson('password').toString()` into Lambda env. This is a CDK synthesis warning (risk of exposing secret in template). Treat secrets appropriately in real deployments (e.g. Secrets Manager reference resolved at runtime or inject via secure means). The demo/tests still work; don’t ignore in production contexts.
+- **Secret exposure warning from CDK**: Avoid passing raw passwords in plain Lambda env vars from CDK if sourced from Secrets Manager in production. Prefer resolving secrets at runtime or passing only references; the current demo generates a secret and passes `DB_SECRET_ARN` (and may also expose via generated secret values in templates). Treat secrets appropriately.
 - **Bundling**: NodejsFunction bundles at test time (`Template.fromStack`) and at synth (esbuild). Keep esbuild as devDependency.
-- **VPC/NAT**: Stack still creates VPC; external Postgres over private network may require Lambda in VPC. Current code does not force Lambda into VPC unless props passed (graphql-api/seed accept optional vpc/vpcSubnets) — adjust as needed for your external DB access pattern.
-- **CDK tests**: Template assertions expect specific resources (AppSync, 4 resolvers, Node 22, seed custom resource). If changing infra, update tests accordingly.
+- **VPC/NAT**: Stack may still create VPC if needed for private external DB access; `graphql-api.ts` and `seed.ts` accept optional `vpc`/`vpcSubnets`. No NAT required if not routing to internet.
+- **CDK tests**: Template assertions expect AppSync (4 resolvers), Node 22, and seed custom resource. If changing infra, update tests accordingly.
 - **Atomic changes**: Use `withTransaction()` when modifying multiple tables/rows that must commit atomically.
 
 ## Style & Verification

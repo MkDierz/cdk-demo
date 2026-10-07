@@ -1,59 +1,54 @@
 import * as cdk from 'aws-cdk-lib';
-import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import * as rds from 'aws-cdk-lib/aws-rds';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 
-export class DemoDatabase extends Construct {
-  public readonly cluster: rds.DatabaseCluster;
+export interface ExternalDbConfig {
+  readonly host: string;
+  readonly port: number;
+  readonly databaseName: string;
+  readonly secret: secretsmanager.ISecret;
+}
+
+export class ExternalDb extends Construct {
+  public readonly host: string;
+  public readonly port: number;
   public readonly databaseName = 'todos';
+  public readonly secret: secretsmanager.ISecret;
 
   constructor(scope: Construct, id: string) {
     super(scope, id);
 
-    // natGateways: 0 — nothing in this stack needs the internet. The Lambdas
-    // reach Aurora through the Data API (HTTPS), so no NAT cost.
-    const vpc = new ec2.Vpc(this, 'Vpc', {
-      maxAzs: 2,
-      natGateways: 0,
-      subnetConfiguration: [
-        { name: 'public', subnetType: ec2.SubnetType.PUBLIC },
-        { name: 'isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
-      ],
-    });
-
-    this.cluster = new rds.DatabaseCluster(this, 'Cluster', {
-      engine: rds.DatabaseClusterEngine.auroraPostgres({
-        version: rds.AuroraPostgresEngineVersion.VER_16_13,
-      }),
-      writer: rds.ClusterInstance.serverlessV2('writer'),
-      serverlessV2MinCapacity: 0.5,
-      serverlessV2MaxCapacity: 2,
-      vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
-      credentials: rds.Credentials.fromGeneratedSecret('appadmin'),
-      defaultDatabaseName: this.databaseName,
-      // Demo repo: `cdk destroy` removes everything.
-      // Use RETAIN (the CDK default) in real projects.
+    // For external managed DB, credentials should come from Secrets Manager.
+    // Create a placeholder secret; in real deployments reference an existing one.
+    this.secret = new secretsmanager.Secret(this, 'DbSecret', {
+      secretName: 'cdk-demo/external-db',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          username: 'postgres',
+          host: 'localhost',
+          port: 5432,
+          dbname: this.databaseName,
+        }),
+        generateStringKey: 'password',
+      },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // The Data API lets clients run SQL over HTTPS without attaching to the
-    // VPC. Not exposed on the L2 Cluster props — set it on the Cfn resource.
-    const cfnCluster = this.cluster.node.defaultChild as rds.CfnDBCluster;
-    cfnCluster.enableHttpEndpoint = true;
+    this.host = 'localhost';
+    this.port = 5432;
   }
 }
 
-/** Environment variables every Lambda needs to talk to the cluster. */
-export function dbEnvironment(cluster: rds.DatabaseCluster, databaseName: string): Record<string, string> {
-  if (!cluster.secret) {
-    throw new Error('Cluster must have a generated credentials secret');
-  }
+export function dbEnvironmentFromSecret(
+  host: string,
+  port: number,
+  databaseName: string,
+  secret: secretsmanager.ISecret,
+): Record<string, string> {
   return {
-    DB_HOST: cluster.clusterEndpoint.hostname,
-    DB_PORT: cluster.clusterEndpoint.port?.toString() ?? '5432',
-    DB_USER: 'appadmin',
-    DB_PASSWORD: cluster.secret.secretValueFromJson('password').toString(),
+    DB_HOST: host,
+    DB_PORT: port.toString(),
     DB_NAME: databaseName,
+    DB_SECRET_ARN: secret.secretArn,
   };
 }

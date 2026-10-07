@@ -1,4 +1,5 @@
 import { Pool, type PoolClient, type QueryResult } from 'pg';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 export interface DbConfig {
   readonly host: string;
@@ -13,19 +14,32 @@ export type QueryFn = (sql: string, params?: unknown[]) => Promise<any[][]>;
 
 let pool: Pool | null = null;
 
+async function getSecretValue(secretArn: string): Promise<any> {
+  const client = new SecretsManagerClient({});
+  const resp = await client.send(new GetSecretValueCommand({ SecretId: secretArn }));
+  const secret = resp.SecretString ?? Buffer.from(resp.SecretBinary ?? '').toString('utf8');
+  try {
+    return JSON.parse(secret);
+  } catch {
+    return { password: secret };
+  }
+}
+
 export function dbConfigFromEnv(): DbConfig {
   const host = process.env.DB_HOST;
   const user = process.env.DB_USER;
   const password = process.env.DB_PASSWORD;
-  if (!host || !user || !password) {
-    throw new Error('DB_HOST, DB_USER, DB_PASSWORD must be set');
+  const secretArn = process.env.DB_SECRET_ARN;
+
+  if (!host) {
+    throw new Error('DB_HOST must be set');
   }
   const port = process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 5432;
   return {
     host,
     port,
-    user,
-    password,
+    user: user ?? 'postgres',
+    password: password ?? '',
     database: process.env.DB_NAME ?? 'postgres',
     ssl: process.env.DB_SSL === 'true',
   };

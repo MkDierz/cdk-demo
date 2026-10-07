@@ -1,15 +1,17 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
-import * as rds from 'aws-cdk-lib/aws-rds';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import type * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { Construct } from 'constructs';
 import * as path from 'node:path';
-import { dbEnvironment } from './database';
+import { dbEnvironmentFromSecret } from './database';
 
 export interface TodoSeedProps {
-  readonly cluster: rds.DatabaseCluster;
+  readonly host: string;
+  readonly port: number;
   readonly databaseName: string;
+  readonly secret: secretsmanager.ISecret;
   readonly schemaVersion: string;
   readonly vpc?: ec2.Vpc;
   readonly vpcSubnets?: ec2.SubnetSelection;
@@ -24,11 +26,11 @@ export class TodoSeed extends Construct {
       entry: path.join(__dirname, '../lambda/seed-handler.ts'),
       handler: 'handler',
       bundling: { externalModules: [] },
-      environment: dbEnvironment(props.cluster, props.databaseName),
+      environment: dbEnvironmentFromSecret(props.host, props.port, props.databaseName, props.secret),
       vpc: props.vpc,
       vpcSubnets: props.vpcSubnets,
     });
-    props.cluster.grantDataApiAccess(seedFn);
+    props.secret.grantRead(seedFn);
 
     const provider = new cdk.custom_resources.Provider(this, 'SeedProvider', {
       onEventHandler: seedFn,
