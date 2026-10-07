@@ -1,5 +1,4 @@
 import type { AppSyncResolverEvent } from 'aws-lambda';
-import type { Field, SqlParameter } from '@aws-sdk/client-rds-data';
 import { dbConfigFromEnv, runQuery, type QueryFn } from './db';
 
 export interface Todo {
@@ -12,16 +11,20 @@ export interface Todo {
 // Must match the column order expected by rowToTodo.
 const COLUMNS = 'id, title, done, created_at';
 
-function str(field: Field | undefined): string {
-  return field?.stringValue ?? '';
+function toString(val: unknown): string {
+  return val === null || val === undefined ? '' : String(val);
 }
 
-export function rowToTodo(row: Field[]): Todo {
+function toBoolean(val: unknown): boolean {
+  return Boolean(val);
+}
+
+export function rowToTodo(row: unknown[]): Todo {
   return {
-    id: str(row[0]),
-    title: str(row[1]),
-    done: row[2]?.booleanValue ?? false,
-    createdAt: str(row[3]),
+    id: toString(row[0]),
+    title: toString(row[1]),
+    done: toBoolean(row[2]),
+    createdAt: toString(row[3]),
   };
 }
 
@@ -41,22 +44,20 @@ export async function handleEvent(
       return rows.map(rowToTodo);
     }
     case 'getTodo': {
-      const rows = await query(`SELECT ${COLUMNS} FROM todos WHERE id = :id`, [
-        { name: 'id', value: { stringValue: String(args.id) } },
-      ]);
+      const rows = await query(`SELECT ${COLUMNS} FROM todos WHERE id = $1`, [String(args.id)]);
       return rows.length > 0 ? rowToTodo(rows[0]) : null;
     }
     case 'addTodo': {
       // RETURNING yields the inserted row without a second round trip.
-      const rows = await query(`INSERT INTO todos (title) VALUES (:title) RETURNING ${COLUMNS}`, [
-        { name: 'title', value: { stringValue: String(args.title) } },
+      const rows = await query(`INSERT INTO todos (title) VALUES ($1) RETURNING ${COLUMNS}`, [
+        String(args.title),
       ]);
       if (rows.length === 0) throw new Error('INSERT returned no row');
       return rowToTodo(rows[0]);
     }
     case 'toggleTodo': {
-      const rows = await query(`UPDATE todos SET done = NOT done WHERE id = :id RETURNING ${COLUMNS}`, [
-        { name: 'id', value: { stringValue: String(args.id) } },
+      const rows = await query(`UPDATE todos SET done = NOT done WHERE id = $1 RETURNING ${COLUMNS}`, [
+        String(args.id),
       ]);
       if (rows.length === 0) throw new Error(`Todo not found: ${String(args.id)}`);
       return rowToTodo(rows[0]);

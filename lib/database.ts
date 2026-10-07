@@ -50,8 +50,10 @@ export function dbEnvironment(cluster: rds.DatabaseCluster, databaseName: string
     throw new Error('Cluster must have a generated credentials secret');
   }
   return {
-    DB_RESOURCE_ARN: cluster.clusterArn,
-    DB_SECRET_ARN: cluster.secret.secretArn,
+    DB_HOST: cluster.clusterEndpoint.hostname,
+    DB_PORT: cluster.clusterEndpoint.port?.toString() ?? '5432',
+    DB_USER: 'appadmin',
+    DB_PASSWORD: cluster.secret.secretValueFromJson('password').toString(),
     DB_NAME: databaseName,
   };
 }

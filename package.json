@@ -13,6 +13,7 @@
     "@types/aws-lambda": "^8.10.164",
     "@types/jest": "^30",
     "@types/node": "^24.10.1",
+    "@types/pg": "^8.23.1",
     "aws-cdk": "2.1144.0",
     "esbuild": "^0.28.2",
     "jest": "^30",
@@ -22,6 +23,7 @@
   "dependencies": {
     "@aws-sdk/client-rds-data": "^3.1146.0",
     "aws-cdk-lib": "^2.271.0",
-    "constructs": "^10.5.0"
+    "constructs": "^10.5.0",
+    "pg": "^8.23.1"
   }
 }

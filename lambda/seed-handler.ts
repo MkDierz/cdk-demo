@@ -1,33 +1,37 @@
-import type { CloudFormationCustomResourceEvent } from 'aws-lambda';
 import { dbConfigFromEnv, runQuery } from './db';
 
-// Idempotent DDL — safe to run on every deploy.
-const CREATE_TODOS_TABLE = `
-CREATE TABLE IF NOT EXISTS todos (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  title TEXT NOT NULL,
-  done BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)`;
-
-// ON CONFLICT DO NOTHING keeps re-runs from duplicating rows.
-const SEED_TODOS = `
-INSERT INTO todos (title) VALUES
-  ('Read the CDK docs'),
-  ('Ship the GraphQL demo')
-ON CONFLICT DO NOTHING`;
-
-export async function handleSeedEvent(event: CloudFormationCustomResourceEvent): Promise<unknown> {
-  if (event.RequestType === 'Delete') {
-    // Leave the data alone; the cluster itself is removed by CloudFormation.
-    return { PhysicalResourceId: event.PhysicalResourceId };
-  }
-
-  const config = dbConfigFromEnv();
-  await runQuery(config, CREATE_TODOS_TABLE);
-  await runQuery(config, SEED_TODOS);
-
-  return { PhysicalResourceId: 'TodoSchemaSeed' };
+export interface SeedEvent {
+  readonly RequestType: 'Create' | 'Update' | 'Delete';
+  readonly ResourceProperties: {
+    readonly schemaVersion: string;
+  };
 }
 
-export const handler = handleSeedEvent;
+const DDL = `
+  CREATE TABLE IF NOT EXISTS todos (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    title text NOT NULL,
+    done boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+
+  CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+  INSERT INTO todos (title, done)
+  SELECT 'Learn CDK', true
+  WHERE NOT EXISTS (SELECT 1 FROM todos WHERE title = 'Learn CDK');
+
+  INSERT INTO todos (title, done)
+  SELECT 'Build a GraphQL API', false
+  WHERE NOT EXISTS (SELECT 1 FROM todos WHERE title = 'Build a GraphQL API');
+
+  INSERT INTO todos (title, done)
+  SELECT 'Connect to Aurora', false
+  WHERE NOT EXISTS (SELECT 1 FROM todos WHERE title = 'Connect to Aurora');
+`;
+
+export const handler = async (_event: SeedEvent): Promise<Record<string, unknown>> => {
+  const config = dbConfigFromEnv();
+  await runQuery(config, DDL);
+  return { PhysicalResourceId: 'todo-seed' };
+};

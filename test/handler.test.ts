@@ -1,5 +1,4 @@
 import type { AppSyncResolverEvent } from 'aws-lambda';
-import type { Field } from '@aws-sdk/client-rds-data';
 import type { QueryFn } from '../lambda/db';
 import { handleEvent, rowToTodo } from '../lambda/handler';
 
@@ -9,19 +8,14 @@ function appSyncEvent(fieldName: string, args: Record<string, unknown> = {}) {
   >;
 }
 
-function makeQuery(rows: Field[][]) {
+function makeQuery(rows: unknown[][]) {
   return jest.fn().mockResolvedValue(rows) as unknown as jest.MockedFunction<QueryFn>;
 }
 
-const todoRow: Field[] = [
-  { stringValue: 'abc-123' },
-  { stringValue: 'Write tests' },
-  { booleanValue: false },
-  { stringValue: '2026-10-06T12:00:00.000Z' },
-];
+const todoRow: unknown[] = ['abc-123', 'Write tests', false, '2026-10-06T12:00:00.000Z'];
 
 describe('rowToTodo', () => {
-  test('maps Data API fields to the GraphQL shape', () => {
+  test('maps fields to the GraphQL shape', () => {
     expect(rowToTodo(todoRow)).toEqual({
       id: 'abc-123',
       title: 'Write tests',
@@ -52,8 +46,8 @@ describe('handleEvent', () => {
 
     const result = await handleEvent(appSyncEvent('getTodo', { id: 'nope' }), query);
 
-    expect(query.mock.calls[0][0]).toContain('WHERE id = :id');
-    expect(query.mock.calls[0][1]).toEqual([{ name: 'id', value: { stringValue: 'nope' } }]);
+    expect(query.mock.calls[0][0]).toContain('WHERE id = $1');
+    expect(query.mock.calls[0][1]).toEqual(['nope']);
     expect(result).toBeNull();
   });
 
@@ -62,8 +56,8 @@ describe('handleEvent', () => {
 
     await handleEvent(appSyncEvent('addTodo', { title: 'Ship it' }), query);
 
-    expect(query.mock.calls[0][0]).toContain('INSERT INTO todos (title) VALUES (:title) RETURNING');
-    expect(query.mock.calls[0][1]).toEqual([{ name: 'title', value: { stringValue: 'Ship it' } }]);
+    expect(query.mock.calls[0][0]).toContain('INSERT INTO todos (title) VALUES ($1) RETURNING');
+    expect(query.mock.calls[0][1]).toEqual(['Ship it']);
   });
 
   test('user input never lands in the SQL string (parameterized queries)', async () => {
@@ -73,7 +67,7 @@ describe('handleEvent', () => {
     await handleEvent(appSyncEvent('addTodo', { title: evil }), query);
 
     expect(query.mock.calls[0][0]).not.toContain(evil);
-    expect(query.mock.calls[0][1]).toEqual([{ name: 'title', value: { stringValue: evil } }]);
+    expect(query.mock.calls[0][1]).toEqual([evil]);
   });
 
   test('toggleTodo flips done via UPDATE ... RETURNING', async () => {
@@ -81,8 +75,8 @@ describe('handleEvent', () => {
 
     await handleEvent(appSyncEvent('toggleTodo', { id: 'abc-123' }), query);
 
-    expect(query.mock.calls[0][0]).toContain('UPDATE todos SET done = NOT done WHERE id = :id');
-    expect(query.mock.calls[0][1]).toEqual([{ name: 'id', value: { stringValue: 'abc-123' } }]);
+    expect(query.mock.calls[0][0]).toContain('UPDATE todos SET done = NOT done WHERE id = $1');
+    expect(query.mock.calls[0][1]).toEqual(['abc-123']);
   });
 
   test('toggleTodo throws when the id does not exist', async () => {

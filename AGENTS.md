@@ -4,53 +4,40 @@
 
 | Action | Command |
 |---|---|
-| Install deps | `bun install` (repo uses **bun** — `bun.lock`, use `bun add`, not npm) |
-| Type-check | `bun run build` (`tsc`) |
+| Install deps | `bun install` (repo uses **bun** — `bun.lock`; use `bun add`, not npm) |
+| Type-check/build | `bun run build` (`tsc`) |
 | Watch | `bun run watch` (`tsc -w`) |
 | Tests | `bun run test` (`jest`) |
 | Synthesize CFN | `npx cdk synth` (emits `cdk.out/`) |
-| Diff / deploy / destroy | `npx cdk diff` / `npx cdk deploy` / `npx cdk destroy` |
+| Diff/deploy/destroy | `npx cdk diff` / `npx cdk deploy` / `npx cdk destroy` |
 
-Verification order: **`build` → `test` → `synth`**. `cdk.json`'s app command runs
-`npx tsc` before `tsx bin/cdk-demo.ts`, so type errors also block synth.
+Verification order: **`build` → `test` → `synth`**. `cdk.json` runs `npx tsc` before `tsx bin/cdk-demo.ts`, so type errors block synth.
 
-## Architecture (learning repo)
+## Architecture
 
-AppSync GraphQL → single TypeScript Lambda resolver → Aurora Serverless v2
-PostgreSQL via the **RDS Data API** (HTTPS, so Lambda needs no VPC/NAT).
+AppSync GraphQL → single TypeScript Lambda resolver (`lambda/handler.ts`) → PostgreSQL accessed via a standard Postgres client (`pg` in `lambda/db.ts`). The Lambda wiring is thin (`handler` exports the AWS Lambda entry; `handleEvent` is pure/injectable).
 
-- `lib/` — one construct per concern: `database.ts`, `graphql-api.ts`,
-  `seed.ts`, composed by `cdk-demo-stack.ts`
-- `lambda/` — three esbuild-bundled entrypoints: `handler.ts` (dispatch),
-  `db.ts` (Data API wrapper), `seed-handler.ts` (DDL)
-- `graphql/schema.graphql` — AppSync validates requests against this before
-  Lambda runs; resolvers only see fields that passed
-- `test/cdk-demo.test.ts` — template assertions; `test/handler.test.ts` —
-  pure `handleEvent` tests via an injected fake query fn (no AWS, no module mocks)
+Key paths: `lib/` constructs (`database.ts`, `graphql-api.ts`, `seed.ts`) composed by `cdk-demo-stack.ts`; `graphql/schema.graphql`; `lambda/` (`handler.ts`, `db.ts`, `seed-handler.ts`). Bundling via esbuild (NodejsFunction).
 
-## Gotchas — things that look wrong but are intentional
+## External Postgres (current implementation)
 
-- **`natGateways: 0`** in `lib/database.ts` — Data API is HTTPS; NAT would add
-  ~$32/mo for nothing. A test asserts `AWS::EC2::NatGateway` count is 0. Don't "fix" it.
-- **`bundling: { externalModules: [] }`** on both NodejsFunctions — bundles our
-  pinned `@aws-sdk/client-rds-data` instead of relying on the runtime's copy.
-- **Data API via escape hatch** — `enableHttpEndpoint` is not on the L2
-  `DatabaseClusterProps`; it's set on the Cfn child in `lib/database.ts`.
-- **`defaultDatabaseName`**, not `databaseName` — the L2 prop name for the
-  initial database. `secret` exists only on concrete `rds.DatabaseCluster`,
-  not on `IDatabaseCluster`.
-- **esbuild is required** — `NodejsFunction` bundles at *test* time
-  (`Template.fromStack`) and at synth. It's a devDependency; keep it that way.
-- **Seed**: custom resource `Custom::TodoSeed` runs idempotent DDL on deploy.
-  Bump `schemaVersion` in `lib/cdk-demo-stack.ts` to re-run seed SQL.
+- DB access uses **normal Postgres client** (`pg`) with connection params (host/port/user/password/database/ssl) from env vars `DB_HOST`, `DB_PORT` (default 5432), `DB_USER`, `DB_PASSWORD`, `DB_NAME` (default `postgres`), `DB_SSL` (`true`/`false`).
+- `lambda/db.ts` exports `dbConfigFromEnv()`, `runQuery(config, sql, params)`, and `withTransaction(config, fn)` for atomic operations. SQL uses **parameterized queries** with `$1, $2, ...` (Postgres style). The `query` function returns `any[][]` for compatibility with the injected test shape.
+- `handleEvent(event, query)` is pure and injectable; tests pass a fake `QueryFn` (no AWS, no module mocks). Keep this pattern.
+- Lambda environment is built by `dbEnvironment()` in `lib/database.ts` and consumed by Lambda functions. For externally hosted DB, this supplies the Postgres connection vars (not RDS Data API ARNs).
+- Seed runs as `Custom::TodoSeed` (custom resource). Bump `schemaVersion` in `cdk-demo-stack.ts` to re-run seed SQL.
 
-## Cost
+## Gotchas
 
-Aurora Serverless v2 costs ~$35/mo while the stack exists (min 0.5 ACU).
-`removalPolicy: DESTROY` — run `npx cdk destroy` after a deploy.
+- **Secret exposure warning from CDK**: `dbEnvironment()` currently passes `cluster.secret.secretValueFromJson('password').toString()` into Lambda env. This is a CDK synthesis warning (risk of exposing secret in template). Treat secrets appropriately in real deployments (e.g. Secrets Manager reference resolved at runtime or inject via secure means). The demo/tests still work; don’t ignore in production contexts.
+- **Bundling**: NodejsFunction bundles at test time (`Template.fromStack`) and at synth (esbuild). Keep esbuild as devDependency.
+- **VPC/NAT**: Stack still creates VPC; external Postgres over private network may require Lambda in VPC. Current code does not force Lambda into VPC unless props passed (graphql-api/seed accept optional vpc/vpcSubnets) — adjust as needed for your external DB access pattern.
+- **CDK tests**: Template assertions expect specific resources (AppSync, 4 resolvers, Node 22, seed custom resource). If changing infra, update tests accordingly.
+- **Atomic changes**: Use `withTransaction()` when modifying multiple tables/rows that must commit atomically.
 
-## Style notes
+## Style & Verification
 
-- Handler logic lives in a **pure, injectable** `handleEvent(event, query)` so
-  unit tests never touch AWS; the exported `handler` is thin wiring.
-- All SQL uses named bind parameters (`:id`) — never interpolate user input.
+- Preserve parameterization — never interpolate user input into SQL.
+- Handler stays pure (`handleEvent`). Return shapes match GraphQL (id/title/done/createdAt).
+- Verification: `build` → `test` → `synth`. Run these after changes.
+- Never commit changes unless explicitly requested.
